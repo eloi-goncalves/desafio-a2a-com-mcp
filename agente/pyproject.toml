@@ -1,0 +1,11 @@
+[project]
+name = "agente-central-de-salas"
+version = "1.0.0"
+description = "Agente A2A que e host MCP por dentro (sem LLM, so biblioteca padrao)."
+requires-python = ">=3.10"
+# Sem dependencias externas: o agente usa apenas a biblioteca padrao do Python.
+# Assim o caminho de execucao e deterministico e nao ha SDK de provedor de LLM.
+dependencies = []
+
+[tool.setuptools]
+py-modules = ["agent"]

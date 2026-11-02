@@ -217,9 +217,13 @@ graph LR
   **livre**; o cliente só precisa devolver a **mesma** chave. Não fixar.
 - **`structuredContent` da reserva.** Inclui `motivo` (null no sucesso, `"recusado"` na recusa), além
   dos campos citados no enunciado. Reproduzir conforme wire `02`/`04`/`11`.
-- **Escolha da stack (Python vs Node):** **A DECIDIR na Fase 01.** Os exemplos de wire foram
-  capturados do SDK Python (`requestState` com prefixo `v1.`, chave `__main__:...`), o que sugere
-  caminho de menor atrito em Python, mas a nota não depende da linguagem.
+- **Escolha da stack (Python vs Node):** **DECIDIDA na Fase 01 → Python.** O SDK oficial do MCP **v2
+  (`mcp==2.3.0`, revisão 2026-07-28)** existe e traz o MRTR de primeira classe (`input_required`,
+  `inputRequests`, `requestState` via `RequestStateSecurity` AES-256-GCM) e o Streamable HTTP. Os
+  exemplos de wire foram capturados dessa mesma stack (chave `__main__:escolha_de_sala`,
+  `requestState` com prefixo `v1.`), confirmando o menor atrito em Python. O **servidor** usa o SDK; o
+  **agente** usa um cliente MCP raw (JSON-RPC sobre HTTP, só biblioteca padrão) para enxergar o
+  `input_required` cru e ecoar o `requestState` opaco sem um callback respondendo sozinho.
 
 ---
 
@@ -228,3 +232,40 @@ graph LR
 Cada agente de fase deve conseguir trabalhar lendo **apenas** o documento da sua fase + as fontes de
 verdade. Ao concluir uma fase: rodar a Definição de Pronto, e abrir a próxima. A validação ponta a
 ponta só é exigida na Fase 08, mas rodar o validador parcialmente ao fim de 02/03/04 acelera o debug.
+
+---
+
+## 9. Histórico de execução (entrega)
+
+> Registro cronológico do que foi efetivamente implementado e verificado. **Resultado final:
+> 36/36 verificações do validador em PASS, `exit code 0`.** Nenhuma pendência em aberto.
+
+### Decisões tomadas durante a execução
+- **Stack = Python + SDK oficial `mcp==2.3.0`** (servidor) e **biblioteca padrão** (agente). Ver §7.
+- **Linha de pausa derivada do `enum`** da execução (não fixa): confirmado pelo validador (check 28
+  espera `alternativas: sala-fusca, sala-mirante` em estado limpo).
+- **`requestState` protegido por AES-256-GCM** do SDK (`RequestStateSecurity`), `ttl=900s` (15 min),
+  segredo só em `REQUEST_STATE_SECRET` (≥32 bytes). Restart-safe comprovado manualmente.
+
+### Fases concluídas
+
+| Fase | O que foi feito | Artefatos | Verificações |
+|---|---|---|---|
+| **01 — Fundação e setup** | Decisão de stack; `.venv` com `mcp==2.3.0`; `pyproject.toml` em `servidor-mcp/` e `agente/` (versões travadas, sem LLM); `.env.example`; scripts `subir-mcp.sh`, `subir-agente.sh`, `scripts/validar-e2e.sh`. | `servidor-mcp/pyproject.toml`, `agente/pyproject.toml`, `.env.example`, `subir-*.sh` | — (base) |
+| **02 — MCP base** | Streamable HTTP em `/mcp:7301` via `MCPServer` (`json_response=True`); 3 tools declaradas; `listar_salas` com `structuredContent`+texto idênticos; resource `politica://uso` (`text/markdown`); `_meta` → `-32602`/400 (SDK); log em stderr (método, id, traceparent) por middleware. | `servidor-mcp/server.py`, `servidor-mcp/dominio.py` | 1–8 PASS |
+| **03 — MCP regras** | `consultar_disponibilidade` e `reservar_sala` (caminho feliz); validações sala/intervalo/janela/duração na ordem exata; 4 erros de execução com mensagens literais; `structuredContent` da reserva. | `servidor-mcp/dominio.py` (`validar_pedido`, `Reservas`) | 9–12 PASS |
+| **04 — MRTR** | Resolver `__main__:escolha_de_sala`: livre→reserva direto, ocupado→elicitation form com `enum` ordenado (cap. crescente, id alfabético), sem alternativa→`isError`; `requestState` selado (AES-GCM); `-32021` sem capability; `-32602` adulterado; recusa `decline`; **restart-safe** verificado. | `servidor-mcp/server.py` (`escolha_de_sala`, `reservar_sala`) | 13–20 PASS |
+| **05 — Agente host MCP** | Cliente MCP raw (JSON-RPC/HTTP): `tools/list` no startup antes do 1º `tools/call`; leitura do resource e extração da versão; `_meta` com `elicitation.form` + headers espelhados; propagação do `traceparent` (mesmo trace-id, span novo); `isError`→mensagem preservada. | `agente/agent.py` (`mcp_call`, `_descobrir_com_retry`) | base p/ 35 |
+| **06 — Agente A2A** | Agent Card v1.0 em `/.well-known/agent-card.json` (`supportedInterfaces`/`protocolBinding JSONRPC`/`1.0`, skill `reservar-sala`); `/a2a` com `SendMessage`/`GetTask`; máquina de estados da Task; artifact `reserva` com `politica`; Task terminal recusa `SendMessage`; sala inexistente→`FAILED`. | `agente/agent.py` (`agent_card`, `Handler`, `_abrir`) | 21–26, 31, 35 PASS |
+| **07 — A ponte** | `input_required`→`TASK_STATE_INPUT_REQUIRED` com `alternativas: ...` na ordem do enum; `requestState` guardado em `_PAUSAS[task_id]` (nunca exposto); continuação com id de JSON-RPC novo e `requestState` ecoado; `escolha=recusar`→`CANCELED`; escolha fora do enum mantém pausa; isolamento por Task; determinismo. | `agente/agent.py` (`_tratar_resposta_mcp`, `_continuar`, `mcp_retry`) | 27–30, 32–34, 36 PASS |
+| **08 — Validação, README, entrega** | Validação ponta a ponta do zero (36/36, exit 0); restart-safe e traceparent no stderr conferidos; `README.md` substituído com as 4 seções + saída do validador; `dados/`/`validador/`/`exemplos/` intactos; commit e push na `main`. | `README.md`, `scripts/validar-e2e.sh` | 1–36 PASS |
+
+### Evidências
+- **Validador:** `36 passaram, 0 falharam, de 36 verificacoes`, `exit code 0` (saída completa no `README.md`).
+- **Restart-safe:** conflito → captura do `requestState` (`v1.…`) → restart do MCP → retry conclui
+  (`resultType=complete`, `sala=sala-fusca`).
+- **traceparent:** o trace-id impresso pelo validador aparece no stderr do servidor MCP; há
+  `tools/list` antes do primeiro `tools/call`.
+
+### Pendências
+- Nenhuma. Todos os Critérios de Aceite obrigatórios atendidos e verificados.
